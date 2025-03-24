@@ -1,0 +1,128 @@
+#lang scheme
+(require racket/string)
+
+;; variable_hash
+(define variables (make-hash))
+
+;; TOKENIZER
+(define (tokenize input)
+  (define pattern #rx"\\s*([0-9]+|[a-zA-Z]+|[+*/=()\\-])\\s*")
+  (regexp-match* pattern input))
+
+;; PARSER (Recursive descent)
+
+(define (parse tokens)
+  (define pos 0)
+  (define (peek)
+    (if (< pos (length tokens)) (list-ref tokens pos) #f))
+  (define (next)
+    (if (< pos (length tokens))
+        (begin
+          (set! pos (+ pos 1))
+          (list-ref tokens (- pos 1)))
+        #f))
+  
+  (define (parse-factor)
+    (let ((tok (peek)))
+      (cond
+        ((equal? tok "(")
+         (next) ; "(" tüket
+         (let ((expr (parse-expr)))
+           (if (equal? (peek) ")")
+               (begin (next) expr)
+               (error "Expected closing parenthesis"))))
+        ((equal? tok ")")
+         (error "Unexpected closing parenthesis"))
+        ((regexp-match? #rx"^[0-9]+$" tok)
+         (next)
+         (list 'number (string->number tok)))
+        ((regexp-match? #rx"^[a-zA-Z]+$" tok)
+         (next)
+         (list 'var tok))
+        (else (error "Unexpected token in factor:" tok)))))
+  
+  (define (parse-muldiv)
+    (let ((left (parse-factor)))
+      (let loop ((acc left))
+        (let ((tok (peek)))
+          (if (and tok (or (equal? tok "*") (equal? tok "/")))
+              (let ((op tok))
+                (next)
+                (let ((right (parse-factor)))
+                  (loop (list (if (equal? op "*") 'mul 'div) acc right))))
+              acc)))))
+  
+  (define (parse-addsub)
+    (let ((left (parse-muldiv)))
+      (let loop ((acc left))
+        (let ((tok (peek)))
+          (if (and tok (or (equal? tok "+") (equal? tok "-")))
+              (let ((op tok))
+                (next)
+                (let ((right (parse-muldiv)))
+                  (loop (list (if (equal? op "+") 'add 'sub) acc right))))
+              acc)))))
+  
+  (define (parse-assign)
+    (let ((left (parse-addsub)))
+      (if (equal? (peek) "=")
+          (begin
+            (next) ; "=" tüket
+            (let ((right (parse-assign)))
+              (if (and (list? left) (eq? (car left) 'var))
+                  (list 'assign (cadr left) right)
+                  (error "Left side of assignment must be a variable"))))
+          left)))
+  
+  (define (parse-expr)
+    (parse-assign))
+  
+  (let ((ast (parse-expr)))
+    (if (< pos (length tokens))
+        (error "Unexpected tokens remaining: " (list-tail tokens pos))
+        ast)))
+
+;; EVALUATOR::
+(define (eval-ast ast)
+  (cond
+    ((and (list? ast) (eq? (car ast) 'number))
+     (cadr ast))
+    ((and (list? ast) (eq? (car ast) 'var))
+     (hash-ref variables (cadr ast)
+                (lambda () (error "Undefined variable:" (cadr ast)))))
+    ((and (list? ast) (eq? (car ast) 'add))
+     (+ (eval-ast (cadr ast)) (eval-ast (caddr ast))))
+    ((and (list? ast) (eq? (car ast) 'sub))
+     (- (eval-ast (cadr ast)) (eval-ast (caddr ast))))
+    ((and (list? ast) (eq? (car ast) 'mul))
+     (* (eval-ast (cadr ast)) (eval-ast (caddr ast))))
+    ((and (list? ast) (eq? (car ast) 'div))
+     (let ((denom (eval-ast (caddr ast))))
+       (if (= denom 0)
+           (error "Division by zero")
+           (/ (eval-ast (cadr ast)) denom))))
+    ((and (list? ast) (eq? (car ast) 'assign))
+     (let ((name (cadr ast))
+           (expr (caddr ast)))
+       (let ((val (eval-ast expr)))
+         (hash-set! variables name val)
+         val)))
+    (else (error "Unknown AST structure:" ast))))
+
+;; LOOP
+(define (main)
+  (display "Enter infix expression (or 'exit'): ")
+  (let loop ()
+    (let ((input (read-line)))
+      (if (equal? input "exit")
+          (begin (display "Goodbye!") (newline))
+          (let* ((tokens (tokenize input))
+                 (ast (parse tokens))
+                 (result (eval-ast ast)))
+            (display "Result: ") 
+            (display result) 
+            (newline)
+            (display "Enter infix expression (or 'exit'): ")
+            (loop))))))
+            
+(main)
